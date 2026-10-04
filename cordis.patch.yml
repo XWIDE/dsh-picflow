@@ -1,0 +1,4 @@
+# dsh-picflow：把贴过的图片列成面板 / @ 引用（宿主半边注册 /plugins/dsh-picflow/*）
+- insert:
+    - id: picflow
+      name: dsh-picflow
