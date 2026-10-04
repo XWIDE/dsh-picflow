@@ -1,139 +1,139 @@
 <div align="center">
 
-[English](README.md) | [简体中文](README.zh.md)
+[English](README.en.md) | 简体中文
 
 </div>
 
 # dsh-picflow
 
 <p align="center">
-  <img src="assets/screenshot-1.png" alt="The 引用素材 panel in the composer dock: thumbnail cells numbered 图片506 down to 图片495 with time and size, per-day filter chips, 最新/最早/最大 sorting, and the 自动插入 switch in the header" width="600">
+  <img src="assets/screenshot-1.png" alt="输入框旁的「引用素材」面板：缩略图格子按编号从 图片506 排到 图片495，带时间与大小、按天筛选、最新/最早/最大排序，头部是「自动插入」开关" width="600">
 </p>
 
-## In one line
+## 一句话
 
-Paste a screenshot and reference it by number: every `Ctrl+V` image is stored in the attachment library, gets a stable number (`图片N`), appears in a thumbnail panel next to the composer, and can be dropped into your text as a native reference chip at the caret.
+粘贴的截图按编号引用：每一次 `Ctrl+V` 的图都会进入附件库、拿到固定编号（`图片N`）、列在输入框旁的面板里，并可以一键把「图片N」这张引用芯片插到光标处。
 
-## Why it exists
+## 为什么需要它
 
-`Ctrl+V` an image into the composer and the harness keeps it as a **runtime-only draft attachment** — an in-memory object URL whose bytes are uploaded only when you press send. Until that moment the attachment library on disk does not contain it, so nothing can point at it: the `@` menu has no entry for it, and there is no number by which you could say "the screenshot I pasted just now".
+往输入框 `Ctrl+V` 一张图，内核只把它当成**随手贴的草稿附件**——内存里的 object URL，字节要等你按发送才上传。在那之前，磁盘上的附件库根本没有它，于是谁都没法指向它：`@` 菜单里没有这一条，也没有一个编号让你说清「我刚才贴的那张」。
 
-So you end up describing images in prose — "the first one", "image 2" — which breaks the moment there are three of them, and breaks differently the moment you switch conversations and come back.
+结果只能靠嘴描述：「第一张」「图2」——三张就说不清，切一趟对话回来更说不清。
 
-dsh-picflow closes exactly that gap: the image is admitted to the official store **at paste time**, the number it gets is the same number it will have after you send it, and one click (or none, with auto-insert on) puts that number into your text.
+dsh-picflow 补的就是这个缺口：**粘贴那一刻**就把图收进官方附件库，它拿到的编号，和发送之后是同一个；插进正文要么点一下，要么（开着自动插入时）一下都不用点。
 
-## What it does
+## 它做什么
 
-- **Admits pasted images immediately.** A 350 ms sweep reads the composer's live draft attachments and POSTs the bytes to the plugin's own host route, which calls the official `attachments.saveImage`. Same normalization, same sha256, same object as the copy that appears when you finally send — so there is no duplicate entry, and the number never changes.
-- **Stable numbering.** `图片N` is assigned over the whole library sorted by file mtime ascending: the oldest image is `图片1`. New images only ever get *higher* numbers, so a number you wrote yesterday still means the same picture today.
-- **A thumbnail panel in the composer dock.** The `N 张图` pill expands into `引用素材`: newest first, one cell per image with its number, time and size, plus `插到光标处`, `挂上` (re-attach that stored image to the current message so the model sees the picture itself) and `路径` (copy the markdown reference). Click a thumbnail for a full-screen overlay (click or `Esc` to close).
-- **Search and filters.** `图片12`, `10-04`, `昨天`, `png`, a sha prefix, a size in `kb` — plus per-day chips and `最新 / 最早 / 最大` sorting. Paging loads 120 at a time.
-- **An `@图片` source.** Typing `@` offers a `图片` group; picking an entry inserts the same numbered reference chip, identical to what the panel button does.
-- **Auto-insert (default on).** With the switch on, admission is followed by the reference chip landing at your caret and the panel staying out of the way. Turn it off in the panel header (`自动插入 开/关`) and pasting only stores the image — you click when you want it. The choice is remembered in `localStorage`.
-- **Honest about the trade-off.** Because admission happens at paste time, **an image enters the library even if you never send it.** That is the point — but it is a real behaviour change, so it is stated here rather than discovered later.
+- **粘贴即入库。** 客户端每 350 ms 读一次输入框的实时草稿附件，把字节 POST 给插件自己的宿主路由，由宿主调用官方 `attachments.saveImage`。同一套规范化、同一个 sha256、同一个对象——所以不会出现两条记录，编号也不会变。
+- **编号固定。** `图片N` 按全库文件 mtime 升序排定：最早的那张是 `图片1`。新图只会拿到**更大**的号，所以你昨天写下的编号，今天还是同一张图。
+- **输入框旁的面板。** `N 张图` 胶囊展开成「引用素材」：最新的在最前，一格一张图，带编号、时间、大小，以及 `插到光标处`、`挂上`（把这张存图重新挂成当前消息的附件，模型直接看到图）、`路径`（复制 markdown 引用）。点缩略图是全屏放大浮层，点一下或 `Esc` 关闭。
+- **搜索与筛选。** `图片12`、`10-04`、`昨天`、`png`、sha 前缀、`128kb` 都能搜；另有按天筛选与 `最新 / 最早 / 最大` 排序，翻页一次 120 张。
+- **`@图片` 源。** 打 `@` 会多出一个「图片」分组，选中插入的就是同一张编号引用芯片，和面板按钮完全等价。
+- **自动插入（默认开）。** 开着时：入库完成后引用芯片自己落到光标处，面板不弹出来挡你打字。想改回手动，在面板头部点 `自动插入 开/关`——关掉后粘贴只入库，插不插由你点。这个选择记在 `localStorage` 里。
+- **如实说明代价。** 因为入库发生在粘贴时，**一张图即便你最后没发送，也已经进了库。** 这正是它的意义，但它确实是行为变化，所以写在这里，而不是让你事后发现。
 
 <p align="center">
-  <img src="assets/screenshot-2.png" alt="A message body carrying three numbered reference chips — 图片506, 图片507 and 图片494 — inserted inline where the caret was" width="900">
+  <img src="assets/screenshot-2.png" alt="正文里按光标位置插入的三张编号引用芯片：图片506、图片507、图片494" width="900">
 </p>
 
 <p align="center">
-  <img src="assets/screenshot-3.png" alt="The composer pill row: the 505 张图 pill sits next to the host's own pills" width="900">
+  <img src="assets/screenshot-3.png" alt="输入框下方的胶囊行：「505 张图」胶囊与宿主自带的胶囊并排" width="900">
 </p>
 
-## Install
+## 安装
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/XWIDE/dsh-picflow/main/install.sh | sh
 ```
 
-Manual equivalent:
+手动等价写法：
 
 ```sh
 dsh plugin --profile web add git+https://github.com/XWIDE/dsh-picflow.git
 ```
 
-Then **restart the app hosting the plugin once** — the host half registers HTTP routes at startup:
+装完**把承载插件的应用重启一次**——宿主半边在启动时注册 HTTP 路由：
 
-- **DSH desktop app**: restart DSH NEXT (its title-bar restart menu also has *Reload interface*, which is enough for the browser half only).
-- **`dsh web`**: restart the `dsh` process.
+- **DSH 桌面端**：重启 DSH NEXT（它标题栏的重启菜单里也有「重新加载界面」，但那只够刷新浏览器半边）。
+- **`dsh web`**：重启 `dsh` 进程。
 
-There is no build step and no runtime dependency, so a source install works as-is: no `allowBuilds` prompt.
+没有构建步骤、没有运行时依赖，源码安装直接可用，不会弹 `allowBuilds` 授权。
 
-## How it works
+## 它怎么工作
 
-| Piece | What it does |
+| 部件 | 作用 |
 | --- | --- |
-| `GET  /plugins/dsh-picflow/version` | Cheap library fingerprint (`readdir` + `stat` of the shard directories only). The client polls it every 3 s and refetches the list when it changes. |
-| `POST /plugins/dsh-picflow/admit` | Body = the image bytes. Sniffs the format from the bytes (never from `content-type`), calls the official `attachments.saveImage`, returns `{sha, ordinal, label, bytes, ext, path?}`. |
-| `GET  /plugins/dsh-picflow/images` | The list: `limit`, `materialize`, `offset`, `q`, `day`, `source`, `sort`, `pin`, `session`. `materialize=N` copies the first N rows into the workspace; `pin=<sha>` copies exactly one. |
-| `GET  /plugins/dsh-picflow/raw` | The bytes, with the media type sniffed from the file itself. |
+| `GET  /plugins/dsh-picflow/version` | 廉价库指纹（只 `readdir` + `stat` 分片目录）。客户端每 3 秒问一次，变了才重取清单。 |
+| `POST /plugins/dsh-picflow/admit` | body 就是图片字节。**按字节**嗅探格式（不信 `content-type`），调官方 `attachments.saveImage`，返回 `{sha, ordinal, label, bytes, ext, path?}`。 |
+| `GET  /plugins/dsh-picflow/images` | 清单：`limit`、`materialize`、`offset`、`q`、`day`、`source`、`sort`、`pin`、`session`。`materialize=N` 把前 N 行落进工作区，`pin=<sha>` 只落指定那一张。 |
+| `GET  /plugins/dsh-picflow/raw` | 图片字节，媒体类型也是按文件内容嗅探的。 |
 
-All four sit behind the host trust fence: loopback only, unless you list an authority in `trustedHosts`.
+四条路由都走宿主信任栅栏：默认只对回环地址开放，除非你把某个来源写进 `trustedHosts`。
 
-`插到光标处` needs a path the model can read, so the host keeps a copy of the image inside your workspace at `<workspace>/.dsh/pics/pic-<MMDD-HHMM>-<sha8>.<ext>` (skipped when an identical copy is already there) and inserts a `dsh-resource://file/absolute/...` reference chip pointing at it.
+`插到光标处` 需要一个模型读得到的路径，所以宿主会在你的工作区留一份副本：`<工作区>/.dsh/pics/pic-<MMDD-HHMM>-<sha8>.<ext>`（已有一模一样的副本就跳过），插入的引用芯片指向它，地址形如 `dsh-resource://file/absolute/...`。
 
-## Compatibility
+## 兼容性
 
-| dsh-picflow | Harness | Notes |
+| dsh-picflow | Harness | 说明 |
 | --- | --- | --- |
-| 0.1.0 | **0.2.0-rc.2 (measured)** | Developed and tested against the desktop build of `0.2.0-rc.2`: `install` and `start` verified on a real profile, `uninstall` / `rollback` declared `unknown` because they have not been exercised on this release. |
+| 0.1.0 | **0.2.0-rc.2（实测）** | 针对桌面端 `0.2.0-rc.2` 开发与测试：真实 profile 上验证过 `install` 与 `start`；`uninstall` / `rollback` 标为 `unknown`，因为这个版本上还没实际演练过。 |
 
-Requires Node.js 22.19+ or 24+ for the host half (the same floor the harness CLI itself runs on).
+宿主半边需要 Node.js 22.19+ 或 24+（与 harness CLI 自身的下限一致）。
 
-The client half is loaded by the host's module loader and calls `require('react')`; it declares no npm dependencies, and no official `@deepseek-ai/*` package is pinned, so a version skew in the host roster cannot break the install.
+浏览器半边由宿主模块加载器载入、`require('react')`；本插件不声明任何 npm 依赖，也不钉任何官方 `@deepseek-ai/*` 包，因此宿主 roster 的版本漂移不会把安装带崩。
 
-## Configuration
+## 配置
 
 ```yaml
 - id: picflow
   name: 'dsh-picflow'
   config:
-    trustedHosts: []        # authorities allowed to reach the plugin routes besides loopback,
-                            # e.g. ["my-box.local:3080", "192.168.1.20:3080"] — host[:port]
+    trustedHosts: []        # 除回环外允许访问本插件路由的来源，如
+                            # ["my-box.local:3080", "192.168.1.20:3080"] —— host[:port]
 ```
 
-Reaching a route from a non-loopback origin without listing it answers `403` with the exact line to add.
+非回环来源没登记就访问路由会得到 `403`，响应里直接给出该补的那一行。
 
-Everything else is discovered, not configured: the attachment library is read from `DSH_HOME` (falling back to `~/.dsh`) at `attachments/v1`, and materialized copies go to the session's own workspace.
+其余都是自动发现的，不需要配：附件库从 `DSH_HOME`（取不到时 `~/.dsh`）下的 `attachments/v1` 读，落盘副本写进会话自己的工作区。
 
-## Limits
+## 边界
 
-- **Formats**: PNG, JPEG, WebP, GIF. BMP is not accepted by the official attachment store, so `/admit` answers `400 unsupported-image`. Disguised files are rejected by content sniffing, not by extension.
-- **Size**: 20 MB per image in the official store; the `/admit` request body is capped at 24 MB (`413 body-too-large`).
-- **List**: 60 rows per request by default, 400 maximum; the panel pages 120 at a time.
+- **格式**：PNG、JPEG、WebP、GIF。官方附件库不收 BMP，`/admit` 会回 `400 unsupported-image`；改名伪装的文件按内容嗅探被拒，不看扩展名。
+- **大小**：官方库单张上限 20 MB；`/admit` 的请求体上限 24 MB（超出回 `413 body-too-large`）。
+- **清单**：单次请求默认 60 行、最多 400 行；面板一次翻 120 张。
 
-## Privacy
+## 隐私
 
-Nothing leaves your machine. The plugin reads the local attachment library, writes copies under the session workspace, and talks only to the host's own loopback routes. No telemetry, no external endpoint, no image is re-uploaded anywhere.
+不联网。插件只读本机附件库、只往会话工作区写副本，只跟宿主自己的回环路由通信；没有遥测，没有外部端点，图不会被重新上传到任何地方。
 
-The two pieces of local state it keeps are `<workspace>/.dsh/pics/` (image copies, so references resolve) and one `localStorage` key, `dsh-picflow.autoInsert`, for the switch.
+它只在本地留两样东西：`<工作区>/.dsh/pics/`（图片副本，引用要靠它解析）和一个 `localStorage` 键 `dsh-picflow.autoInsert`（那个开关）。
 
-## Troubleshooting
+## 疑难
 
-- **The panel says the host half is old** — the client half is newer than the loaded host module. Restart the app; a page refresh cannot reload host code.
-- **`403` from a LAN address** — add that `host[:port]` to `trustedHosts` (the response prints the line to copy).
-- **Pasted image never appears in the panel** — the composer's draft attachments are the source, so the paste has to have landed in the message box of the *current* session. The panel's `刷新` button forces a refetch, and `@图片` reads the same list.
-- **`插到光标处` answers "还没落盘副本"** — the reference needs a file path; if the session has no workspace to copy into, the plugin offers the plain markdown form instead.
-- **Auto-insert did not fire** — it steps aside instead of fighting you: if the composer is busy (a turn is streaming) or the caret is not in the input, the panel opens and tells you why, so you can place it with one click.
-- **An image you pasted but deleted is in the library** — expected, see the trade-off above. Deleting the object from the store removes it from the panel.
+- **面板提示「宿主半边还是旧版」** —— 客户端半边比已加载的宿主模块新。重启应用；刷新页面换不掉宿主代码。
+- **从局域网地址访问得到 `403`** —— 把那个 `host[:port]` 加进 `trustedHosts`（响应里给了可照抄的那行）。
+- **粘了图但面板里没有** —— 草稿附件是数据源，所以图要真的落在**当前会话**的输入框里。面板的 `刷新` 会强制重取，`@图片` 读的是同一份清单。
+- **点 `插到光标处` 说「还没落盘副本」** —— 引用需要磁盘路径；如果这个会话没有可写入的工作区，插件会退而给出纯 markdown 形式。
+- **自动插入没触发** —— 它不跟你抢：输入框正忙（有回合在流式输出）或光标不在输入框时，它会改为弹出面板并说明原因，你点一下即可。
+- **贴了又删掉的图还在库里** —— 预期行为，见上面的取舍。从库里删掉那个对象，面板里也就没了。
 
-## Development
+## 开发
 
 ```sh
-node tests/host.mjs     # host routes: 24 checks
-node tests/chip.mjs     # client half: 78 checks (fake loader + fake React, no browser)
+node tests/host.mjs     # 宿主路由：24 项检查
+node tests/chip.mjs     # 客户端半边：78 项检查（假加载器 + 假 React，不开浏览器）
 ```
 
-Both suites run on plain Node with no dependencies.
+两套测试都是纯 Node、零依赖。
 
-## Uninstall
+## 卸载
 
 ```sh
 dsh plugin --profile web remove dsh-picflow
 ```
 
-Delete `<workspace>/.dsh/pics/` if you also want the materialized copies gone; the images themselves live in the official attachment library and are left alone.
+想把落盘副本也清掉就删 `<工作区>/.dsh/pics/`；图片本体在官方附件库里，本插件不动它们。
 
-## License
+## 许可
 
-MIT — see [LICENSE](LICENSE).
+MIT —— 见 [LICENSE](LICENSE)。
