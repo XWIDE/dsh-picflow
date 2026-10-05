@@ -137,3 +137,9 @@ Delete `<workspace>/.dsh/pics/` if you also want the materialized copies gone; t
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+## Author
+
+**X-WIDE** — GitHub [@XWIDE](https://github.com/XWIDE) · bilibili [374064919](https://space.bilibili.com/374064919) · xiupk@sina.com.cn
+
+Issues and feature requests are welcome.

@@ -13,6 +13,8 @@
     "paste",
     "reference"
   ],
+  "author": "X-WIDE <xiupk@sina.com.cn>",
+  "homepage": "https://github.com/XWIDE/dsh-picflow#readme",
   "type": "module",
   "main": "./index.js",
   "exports": {
