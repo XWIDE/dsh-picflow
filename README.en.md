@@ -46,10 +46,23 @@ dsh-picflow closes exactly that gap: the image is admitted to the official store
 curl -fsSL https://raw.githubusercontent.com/XWIDE/dsh-picflow/main/install.sh | sh
 ```
 
-Manual equivalent:
+**Desktop app (Windows)** — the desktop build does not put `dsh` on PATH, so the line above cannot run there. Use this instead:
+
+```powershell
+iwr https://raw.githubusercontent.com/XWIDE/dsh-picflow/main/install.ps1 -useb | iex
+```
+
+It drives the plugin operations that ship inside the application (`resources\app\lib\plugin-cli.js`), so it needs nothing beyond PowerShell 5.1 and an installed DSH NEXT. Pass `-Remove` to uninstall.
+
+Manual equivalents:
 
 ```sh
 dsh plugin --profile web add git+https://github.com/XWIDE/dsh-picflow.git
+```
+
+```powershell
+$exe = "$env:LOCALAPPDATA\Programs\DSH NEXT\DSH NEXT.exe"
+& $exe --expose-internals "$((Get-Item $exe).Directory.FullName)\resources\app\lib\plugin-cli.js" desktop add github:XWIDE/dsh-picflow
 ```
 
 Then **restart the app hosting the plugin once** — the host half registers HTTP routes at startup:

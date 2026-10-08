@@ -46,10 +46,23 @@ dsh-picflow 补的就是这个缺口：**粘贴那一刻**就把图收进官方�
 curl -fsSL https://raw.githubusercontent.com/XWIDE/dsh-picflow/main/install.sh | sh
 ```
 
+**桌面端（Windows）**——桌面版不把 `dsh` 放进 PATH，上面那条在它身上跑不起来，用这条：
+
+```powershell
+iwr https://raw.githubusercontent.com/XWIDE/dsh-picflow/main/install.ps1 -useb | iex
+```
+
+它调用应用自带的插件操作入口（`resources\app\lib\plugin-cli.js`），只要 PowerShell 5.1 和装好的 DSH NEXT。卸载加 `-Remove`。
+
 手动等价写法：
 
 ```sh
 dsh plugin --profile web add git+https://github.com/XWIDE/dsh-picflow.git
+```
+
+```powershell
+$exe = "$env:LOCALAPPDATA\Programs\DSH NEXT\DSH NEXT.exe"
+& $exe --expose-internals "$((Get-Item $exe).Directory.FullName)\resources\app\lib\plugin-cli.js" desktop add github:XWIDE/dsh-picflow
 ```
 
 装完**把承载插件的应用重启一次**——宿主半边在启动时注册 HTTP 路由：
