@@ -4,6 +4,13 @@ All notable changes to dsh-picflow are recorded here. The format follows [Keep a
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-10-10
+
+### Notes
+
+- Version-only release: the code is identical to 0.2.0, so the feature set documented under 0.2.0 (usage ledger, four-state classification, time buckets, trash-backed cleanup wizard, pinning, `install.ps1`) is what this version ships.
+- First formally tagged and published release of `dsh-picflow` (`v0.3.0`). The compatibility table had been missing its 0.2.0 / 0.3.0 rows; they are added with this release.
+
 ## [0.2.0] — 2026-10-09
 
 ### Added

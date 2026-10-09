@@ -95,6 +95,7 @@ $exe = "$env:LOCALAPPDATA\Programs\DSH NEXT\DSH NEXT.exe"
 | dsh-picflow | Harness | 说明 |
 | --- | --- | --- |
 | 0.1.0 | **0.2.0-rc.2（实测）** | 针对桌面端 `0.2.0-rc.2` 开发与测试：真实 profile 上验证过 `install` 与 `start`；`uninstall` / `rollback` 标为 `unknown`，因为这个版本上还没实际演练过。 |
+| 0.2.0 · 0.3.0 | **0.2.0-rc.2（实测）** | 与 `0.1.0` 同一份实测结论（`0.3.0` 只是版本号递进，代码与 `0.2.0` 相同）：`install` 与 `start` 在真实 profile 上验证过；`uninstall` / `rollback` 仍标 `unknown`。 |
 
 宿主半边需要 Node.js 22.19+ 或 24+（与 harness CLI 自身的下限一致）。
 

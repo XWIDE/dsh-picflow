@@ -95,6 +95,7 @@ All four sit behind the host trust fence: loopback only, unless you list an auth
 | dsh-picflow | Harness | Notes |
 | --- | --- | --- |
 | 0.1.0 | **0.2.0-rc.2 (measured)** | Developed and tested against the desktop build of `0.2.0-rc.2`: `install` and `start` verified on a real profile, `uninstall` / `rollback` declared `unknown` because they have not been exercised on this release. |
+| 0.2.0 · 0.3.0 | **0.2.0-rc.2 (measured)** | Same measurement as `0.1.0` (`0.3.0` is a version-only bump over `0.2.0`): `install` and `start` verified on a real profile, `uninstall` / `rollback` still declared `unknown`. |
 
 Requires Node.js 22.19+ or 24+ for the host half (the same floor the harness CLI itself runs on).
 
