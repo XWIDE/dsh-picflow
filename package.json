@@ -1,6 +1,6 @@
 {
   "name": "dsh-picflow",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "DeepSeek Harness plugin: pasted screenshots become numbered image references. Every Ctrl+V image is admitted to the official attachment library with a stable 图片N number, listed in a composer-dock thumbnail panel with an @图片 source and a zoom overlay, can be inserted as a native reference chip at the caret — automatically after paste, if the auto-insert switch is on — and keeps a usage ledger so time buckets, state buckets and a trash-backed cleanup wizard show what is safe to clear.",
   "keywords": [
     "deepseek",

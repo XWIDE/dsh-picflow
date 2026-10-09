@@ -4,6 +4,12 @@ All notable changes to dsh-picflow are recorded here. The format follows [Keep a
 
 ## [Unreleased]
 
+## [0.3.1] — 2026-10-10
+
+### Added
+
+- **Big-image viewing inside the cleanup wizard.** Every candidate row ends with a `🔍 看图` button, and its thumbnail is clickable as well; both open the existing full-screen zoom overlay (`Esc` or a click closes it, the caption shows 图片N · filename · size). The click handler calls `preventDefault()` / `stopPropagation()`, so clicking the image never toggles that row's checkbox — the row wrapper is a `<label>`, and suppressing its default activation is what keeps selection untouched. Cleanup selection, 全选 / 反选 and 移入回收站 logic are unchanged.
+
 ## [0.3.0] — 2026-10-10
 
 ### Notes

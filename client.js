@@ -506,10 +506,11 @@ window.__ModuleLoader__.load({
 .pf-list{display:flex;flex-direction:column;gap:4px;max-height:280px;overflow:auto}
 .pf-row{display:flex;align-items:center;gap:8px;padding:4px 6px;font-size:11px;border-radius:8px;border:1px solid color-mix(in srgb, CanvasText 12%, transparent);background:color-mix(in srgb, CanvasText 4%, transparent);cursor:pointer}
 .pf-row input[type=checkbox]{flex:none;width:14px;height:14px;accent-color:CanvasText;cursor:pointer}
-.pf-row-thumb{flex:none;width:44px;height:34px;object-fit:cover;border-radius:5px;background:#111}
+.pf-row-thumb{flex:none;width:44px;height:34px;object-fit:cover;border-radius:5px;background:#111;cursor:zoom-in}
 .pf-row-name{flex:none;min-width:52px;font-weight:600}
 .pf-row-meta{flex:none;opacity:.7}
 .pf-row-why{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;opacity:.6}
+.pf-row-zoom{flex:none;padding:3px 8px;font-size:11px;line-height:1.3;border-radius:6px;border:1px solid color-mix(in srgb, CanvasText 24%, transparent);background:color-mix(in srgb, CanvasText 10%, transparent);color:CanvasText;cursor:zoom-in}
 .pf-cleanfoot{display:flex;align-items:center;gap:8px}
 .pf-tag{margin-left:6px;padding:1px 6px;font-size:10px;border-radius:999px;vertical-align:middle;border:1px solid color-mix(in srgb, CanvasText 18%, transparent);opacity:.75}
 .pf-legacy{margin:0 2px 8px;padding:6px 8px;font-size:11px;line-height:1.5;border-radius:8px;border:1px solid color-mix(in srgb, CanvasText 18%, transparent);background:color-mix(in srgb, CanvasText 8%, transparent);opacity:.8}
@@ -1150,10 +1151,24 @@ window.__ModuleLoader__.load({
                                     setPicked(next);
                                   }
                                 }),
-                                h('img', { className: 'pf-row-thumb', src: row.url, alt: row.label, loading: 'lazy' }),
+                                h('img', { className: 'pf-row-thumb', src: row.url, alt: row.label, loading: 'lazy', title: '点击放大看这张图（不会改变勾选）', onClick: (e) => { e.preventDefault(); e.stopPropagation(); showZoom({ row, label: rowLabel(row, 0) }); } }),
                                 h('span', { className: 'pf-row-name' }, rowLabel(row, 0)),
                                 h('span', { className: 'pf-row-meta' }, `${row.day} · ${sizeText(row.bytes)}`),
-                                h('span', { className: 'pf-row-why' }, (Array.isArray(row.reasons) ? row.reasons : [])[0] ?? '')
+                                h('span', { className: 'pf-row-why' }, (Array.isArray(row.reasons) ? row.reasons : [])[0] ?? ''),
+                                h(
+                                  'button',
+                                  {
+                                    type: 'button',
+                                    className: 'pf-row-zoom',
+                                    title: '放大看这张图（不影响勾选）',
+                                    onClick: (e) => {
+                                      e.preventDefault();
+                                      e.stopPropagation();
+                                      showZoom({ row, label: rowLabel(row, 0) });
+                                    }
+                                  },
+                                  '🔍 看图'
+                                )
                               )
                             )
                           ),
