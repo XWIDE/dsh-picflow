@@ -4,10 +4,29 @@ All notable changes to dsh-picflow are recorded here. The format follows [Keep a
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-10-09
+
 ### Added
 
 - **`install.ps1` — desktop-app installer for Windows.** The desktop build puts no `dsh` on PATH, so `install.sh` cannot run there. This script locates `DSH NEXT.exe`, sets `DSH_HOME`, and drives the plugin operations that ship inside the application (`resources\app\lib\plugin-cli.js`), so it needs nothing beyond PowerShell 5.1. `-Profile`, `-Exe` and `-Remove` are supported; one-liner `iwr …/install.ps1 -useb | iex`.
 - **README: desktop (Windows) install section** in both language files, with the manual `--expose-internals` equivalent spelled out.
+- **Usage ledger** (`ledger.js`, host route `POST /ledger`). Every insert, attach, auto-insert and `@` pick records the image's sha with a use count, last-used time and the sessions it appeared in, under `<DSH_HOME>/dsh-picflow/usage.json`. Reporting is fire-and-forget: a failed report never blocks an insert.
+- **Four-state classification.** Each row is now `hot` (used within 7 days, pinned, or pasted in the current session), `warm` (used within 30 days), `cold` (never referenced after the age cutoff, or last used more than 30 days ago) or `fresh` (recent, not yet referenced), plus orthogonal `noise` (< 20 KB) and `big` (> 500 KB) tags. Reason strings are shown verbatim in the cleanup wizard.
+- **Time buckets replace the per-day chip row.** The filter bar is now five rolling buckets — `全部 · 近3天 · 近7天 · 近30天 · 更早` — with a second row of state chips (`用过 · 没用过 · 已置顶 · 大文件 · 小噪音 · 可清理`) carrying live counts; exact-day chips moved behind a `按日期` toggle.
+- **Honest header numbers.** The panel header reports real disk occupancy, the cleanable amount (count + bytes) and the last-used time, aggregated over the whole library instead of the visible window.
+- **Cleanup wizard backed by a trash folder** (`cleanup.js`, routes `GET /cleanup`, `GET|POST /trash`). Candidates are images older than the cutoff (default 14 days) that were never referenced, are not pinned and do not belong to the current session; they come pre-selected, move to `<DSH_HOME>/trash/dsh-picflow/<source>/<sha2>/<sha>` with a manifest, keep workspace thumbnail copies cleaned, and are restorable for 7 days (`op: restore`), after which `op: purge` deletes them for good.
+- **Pinning.** `POST /pin` toggles a per-image pin stored in `<DSH_HOME>/dsh-picflow/pins.json`; a pinned image never enters cleanup candidates, and the cell shows a `顶` badge with an immediate `置顶 / 取消置顶` flip.
+
+### Changed
+
+- `GET /images` accepts `bucket` and `state`, decorates every row with its state, reasons, pin flag and use stats, and returns a `stats` aggregate so the panel needs one request per refresh.
+- `GET /stats` and `GET /cleanup` answer `405` to non-GET methods, matching the method-check convention of the other routes.
+- Trash entry ids carry a sequence suffix, so two images moved in the same minute with the same sha prefix stay individually restorable.
+
+### Notes
+
+- Nothing is deleted by default: the official attachment library is only touched by an explicit move into the plugin's own trash folder, and anything referenced by a session never qualifies.
+- Tests: `tests/chip.mjs` (96 checks), `tests/host.mjs` (24), `tests/ledger-cleanup.mjs` (19), `tests/routes.mjs` (6 live HTTP route checks).
 
 ## [0.1.0] — 2026-10-05
 

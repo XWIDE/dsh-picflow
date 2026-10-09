@@ -123,14 +123,18 @@ ok(`编号固定：最早的是 图片1（${asc.rows[0].label}），翻页不重
 const byNumber = await (await fetch(`${origin}/plugins/dsh-picflow/images?limit=5&q=${encodeURIComponent('图片2')}`)).json();
 assert.equal(byNumber.total, 1, '「图片2」只该命中一张');
 assert.equal(byNumber.rows[0].ordinal, 2);
+// 「今天」按本地日期算，刚过零点还没有新图时命中 0 是正常结果，所以只验"命中的都真是今天"
 const today = await (await fetch(`${origin}/plugins/dsh-picflow/images?limit=5&q=${encodeURIComponent('今天')}`)).json();
-assert.ok(today.rows.length > 0, '「今天」应该有图');
-const byDay = await (await fetch(`${origin}/plugins/dsh-picflow/images?limit=5&day=${today.rows[0].day}`)).json();
-assert.ok(byDay.total >= today.rows.length);
-assert.ok(byDay.rows.every((row) => row.day === today.rows[0].day));
+const nowDay = picflow.dayOf(Date.now());
+assert.ok(today.rows.every((row) => row.day === nowDay), '「今天」命中的必须都是本地今天的图');
+// 取库里真实存在的那一天做按日筛选校验
+const newestDay = payload.days.map((entry) => entry.day).sort().at(-1);
+const byDay = await (await fetch(`${origin}/plugins/dsh-picflow/images?limit=5&day=${newestDay}`)).json();
+assert.ok(byDay.total > 0, `按日筛「${newestDay}」应该有图`);
+assert.ok(byDay.rows.every((row) => row.day === newestDay));
 const byExt = await (await fetch(`${origin}/plugins/dsh-picflow/images?limit=5&q=jpg`)).json();
 assert.ok(byExt.rows.every((row) => row.ext === 'jpg'));
-ok(`搜索可用：图片2 → 1 张；今天 ${today.total} 张；${today.rows[0].day} ${byDay.total} 张；jpg ${byExt.total} 张`);
+ok(`搜索可用：图片2 → 1 张；今天(${nowDay}) ${today.total} 张；${newestDay} ${byDay.total} 张；jpg ${byExt.total} 张`);
 
 // 按需落盘：只拷点名的这一张
 const target = payload.rows[4];

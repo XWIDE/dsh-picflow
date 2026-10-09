@@ -22,6 +22,8 @@ import { createReadStream } from 'node:fs';
 import fsp from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { aggregate, classify, decorate, inTimeBucket, isPinned, ledgerPath, matchesState, pinsPath, readJson, togglePin, touch, writeJson } from './ledger.js';
+import { candidates as cleanupCandidates, listTrash, moveToTrash, purgeTrash, restoreFromTrash, trashRootFor } from './cleanup.js';
 
 /** Cordis 插件名——必须与 cordis.patch.yml 里的行 id 一致。 */
 export const name = 'dsh-picflow';
@@ -43,12 +45,18 @@ const MAX_LIMIT = 400;
 /** 单张图字节上限：超过就不列（附件库里的图实测都在 1 MB 以内）。 */
 const MAX_BYTES = 32 * 1024 * 1024;
 const HEAD_BYTES = 16;
+/** 清理默认边界：入库满 14 天且从未被引用（用户选定）。 */
+const CLEAN_AGE_DAYS = 14;
+
+/** DSH_HOME 根：官方插件面同规则（DSH_HOME 优先，否则 ~/.dsh）。账本/回收站都挂在这下面。 */
+export function dshHome(env = process.env) {
+  const home = typeof env.DSH_HOME === 'string' ? env.DSH_HOME.trim() : '';
+  return home !== '' ? home : join(homedir(), '.dsh');
+}
 
 /** 附件库根：DSH_HOME 优先，否则 ~/.dsh（与官方 defaultAttachmentsDir 同规则）。 */
 export function attachmentsRoot(env = process.env) {
-  const home = typeof env.DSH_HOME === 'string' ? env.DSH_HOME.trim() : '';
-  const base = home !== '' ? home : join(homedir(), '.dsh');
-  return join(base, 'attachments', 'v1');
+  return join(dshHome(env), 'attachments', 'v1');
 }
 
 /** 按 magic 头认格式——库里既没有扩展名也没有文件名可用。 */
@@ -259,10 +267,23 @@ export async function queryImages(root, options = {}) {
   const query = normalizeQuery(options.q);
   const day = typeof options.day === 'string' ? options.day.trim() : '';
   const source = typeof options.source === 'string' ? options.source.trim() : '';
+  const bucket = typeof options.bucket === 'string' ? options.bucket.trim() : '';
+  const state = typeof options.state === 'string' ? options.state.trim() : '';
+  const nowMs = Number.isFinite(Number(options.nowMs)) ? Number(options.nowMs) : Date.now();
+  const ledger = options.ledger ?? {};
+  const pins = options.pins ?? {};
+  const sessionId = typeof options.sessionId === 'string' ? options.sessionId : '';
 
   const { all, days } = await loadLibrary(root);
-  const matched = all.filter(
-    (row) => (day === '' || row.day === day) && (source === '' || row.source === source) && matchesQuery(row, query)
+  // 状态字段每行都贴：账本查表是 O(1)，一次全库也就几毫秒，面板要随时能显示徽标
+  const decorated = decorate(all, { ledger, pins, nowMs, sessionId, ageDays: options.ageDays });
+  const matched = decorated.filter(
+    (row) =>
+      (day === '' || row.day === day) &&
+      (source === '' || row.source === source) &&
+      matchesQuery(row, query) &&
+      inTimeBucket(row, bucket, nowMs) &&
+      matchesState(row, state, { ledger, pins, nowMs, sessionId, ageDays: options.ageDays })
   );
   const page = sortRows(matched, sort).slice(offset, offset + limit);
   return {
@@ -272,7 +293,11 @@ export async function queryImages(root, options = {}) {
     days,
     sort,
     hasMore: offset + limit < matched.length,
-    nextOffset: offset + limit
+    nextOffset: offset + limit,
+    bucket,
+    state,
+    // withAll=true 时把全库行一起带出去，省掉聚合再扫一遍磁盘（一次列图只扫一次）
+    ...(options.withAll === true ? { allRows: all } : {})
   };
 }
 
@@ -468,8 +493,45 @@ function wireRow(row) {
     ordinal: row.ordinal,
     source: row.source,
     url: `${BASE}/raw?ref=sha256:${row.sha}`,
+    ...(row.state !== undefined
+      ? {
+          state: row.state,
+          reasons: row.reasons ?? [],
+          pinned: row.pinned === true,
+          noise: row.noise === true,
+          big: row.big === true,
+          cleanable: row.cleanable === true,
+          uses: row.uses ?? 0,
+          lastUsedMs: row.lastUsedMs ?? null,
+          ageDays: row.ageDays ?? 0
+        }
+      : {}),
     ...(row.path !== undefined ? { path: row.path } : {})
   };
+}
+
+/** 账本与置顶：插件自己的数据目录，附件库永远只读。 */
+async function loadLedger() {
+  return readJson(fsp, ledgerPath(dshHome()));
+}
+
+async function loadPins() {
+  const pins = await readJson(fsp, pinsPath(dshHome()));
+  if (!Array.isArray(pins.shas)) pins.shas = [];
+  return pins;
+}
+
+/** 全库聚合（面板顶部那三个数字 + 两层 chip 的计数都从这出）。 */
+async function statsOf(root, options = {}) {
+  const { all } = await loadLibrary(root);
+  return aggregate(all, options);
+}
+
+async function readJsonBody(req, maxBytes = 64 * 1024) {
+  const bytes = await readBody(req, maxBytes);
+  const text = new TextDecoder().decode(bytes);
+  if (text.trim() === '') return {};
+  return JSON.parse(text);
 }
 
 /**
@@ -478,6 +540,7 @@ function wireRow(row) {
  */
 export function registerRoutes(ctx, { sessions, trustedHosts = [], root: rootOverride } = {}) {
   const root = rootOverride ?? attachmentsRoot();
+  const trashRoot = trashRootFor(dshHome());
   ctx.webServer.register({
     kind: 'exact',
     path: `${BASE}/version`,
@@ -605,9 +668,12 @@ export function registerRoutes(ctx, { sessions, trustedHosts = [], root: rootOve
       const source = queryParam(url, 'source');
       const sort = queryParam(url, 'sort');
       const pin = queryParam(url, 'pin');
+      const bucket = queryParam(url, 'bucket');
+      const state = queryParam(url, 'state');
       const sessionId = queryParam(url, 'session');
       try {
-        const page = await queryImages(root, { limit, offset, q, day, source, sort });
+        const [ledger, pins] = await Promise.all([loadLedger(), loadPins()]);
+        const page = await queryImages(root, { limit, offset, q, day, source, sort, bucket, state, ledger, pins, sessionId, withAll: true });
         const rows = page.rows;
         let note;
         let pinned;
@@ -640,6 +706,8 @@ export function registerRoutes(ctx, { sessions, trustedHosts = [], root: rootOve
             }
           }
         }
+        // 顶部数字要的是磁盘真实体积，聚合用全库行（withAll），不是当前窗口
+        const stats = aggregate(page.allRows ?? [], { ledger, pins, sessionId });
         json(res, 200, {
           rows: rows.map(wireRow),
           total: page.total,
@@ -648,7 +716,10 @@ export function registerRoutes(ctx, { sessions, trustedHosts = [], root: rootOve
           hasMore: page.hasMore,
           nextOffset: page.nextOffset,
           sort: page.sort,
+          bucket: page.bucket,
+          state: page.state,
           totalBytes: rows.reduce((sum, row) => sum + row.bytes, 0),
+          stats,
           root,
           ...(pinned !== undefined ? { pinned } : {}),
           ...(note !== undefined ? { note } : {})
@@ -705,6 +776,176 @@ export function registerRoutes(ctx, { sessions, trustedHosts = [], root: rootOve
       const stream = createReadStream(found.path);
       stream.on('error', () => res.destroy());
       stream.pipe(res);
+    }
+  });
+
+  ctx.webServer.register({
+    kind: 'exact',
+    path: `${BASE}/stats`,
+    handler: async (req, res) => {
+      if (!fence(req, res, trustedHosts)) return;
+      if (req.method !== 'GET' && req.method !== 'HEAD') {
+        json(res, 405, { ok: false, error: 'method-not-allowed', hint: '这是一条只读的 GET 路由。' });
+        return;
+      }
+      const sessionId = queryParam(req.url, 'session');
+      try {
+        const [ledger, pins] = await Promise.all([loadLedger(), loadPins()]);
+        const stats = await statsOf(root, { ledger, pins, sessionId });
+        const trash = await listTrash({ trashRoot, io: fsp });
+        json(res, 200, { ok: true, ...stats, pinned: pins.shas ?? [], trashCount: trash.count, trashBytes: trash.bytes, root, trashRoot });
+      } catch (error) {
+        json(res, 500, { ok: false, error: 'stats-failed', hint: `统计失败：${error instanceof Error ? error.message : String(error)}` });
+      }
+    }
+  });
+
+  ctx.webServer.register({
+    kind: 'exact',
+    path: `${BASE}/ledger`,
+    handler: async (req, res) => {
+      if (!fence(req, res, trustedHosts)) return;
+      if (req.method !== 'POST') {
+        json(res, 405, { ok: false, error: 'method-not-allowed', hint: '记账要走 POST（body 放 {"sha":"…"}）。' });
+        return;
+      }
+      const sessionId = queryParam(req.url, 'session');
+      const kind = queryParam(req.url, 'kind') ?? 'insert';
+      let body;
+      try {
+        body = await readJsonBody(req);
+      } catch (error) {
+        json(res, 400, { ok: false, error: 'bad-body', hint: `body 得是 JSON：${error instanceof Error ? error.message : String(error)}` });
+        return;
+      }
+      const sha = String(body?.sha ?? '').replace(/^sha256:/i, '').trim().toLowerCase();
+      if (!SHA_RE.test(sha)) {
+        json(res, 400, { ok: false, error: 'invalid-sha', hint: 'sha 必须是 64 位十六进制。' });
+        return;
+      }
+      const ledger = await loadLedger();
+      const entry = touch(ledger, sha, { sessionId: typeof sessionId === 'string' ? sessionId : '', kind: String(kind), nowMs: Date.now() });
+      const saved = await writeJson(fsp, ledgerPath(dshHome()), ledger);
+      json(res, 200, { ok: true, saved, entry });
+    }
+  });
+
+  ctx.webServer.register({
+    kind: 'exact',
+    path: `${BASE}/pin`,
+    handler: async (req, res) => {
+      if (!fence(req, res, trustedHosts)) return;
+      if (req.method !== 'POST') {
+        json(res, 405, { ok: false, error: 'method-not-allowed', hint: '置顶切换要走 POST（body 放 {"sha":"…"}）。' });
+        return;
+      }
+      let body;
+      try {
+        body = await readJsonBody(req);
+      } catch (error) {
+        json(res, 400, { ok: false, error: 'bad-body', hint: `body 得是 JSON：${error instanceof Error ? error.message : String(error)}` });
+        return;
+      }
+      const sha = String(body?.sha ?? '').replace(/^sha256:/i, '').trim().toLowerCase();
+      if (!SHA_RE.test(sha)) {
+        json(res, 400, { ok: false, error: 'invalid-sha', hint: 'sha 必须是 64 位十六进制。' });
+        return;
+      }
+      const pins = await loadPins();
+      const result = togglePin(pins, sha, Date.now());
+      const saved = await writeJson(fsp, pinsPath(dshHome()), result.pins);
+      json(res, 200, { ok: true, saved, pinned: result.pinned, count: result.pins.shas.length });
+    }
+  });
+
+  ctx.webServer.register({
+    kind: 'exact',
+    path: `${BASE}/cleanup`,
+    handler: async (req, res) => {
+      if (!fence(req, res, trustedHosts)) return;
+      if (req.method !== 'GET' && req.method !== 'HEAD') {
+        json(res, 405, { ok: false, error: 'method-not-allowed', hint: '这是一条只读的 GET 路由。' });
+        return;
+      }
+      const days = queryInt(req.url ?? '', 'days', CLEAN_AGE_DAYS, 3650);
+      const sessionId = queryParam(req.url, 'session');
+      try {
+        const [ledger, pins] = await Promise.all([loadLedger(), loadPins()]);
+        const { all } = await loadLibrary(root);
+        const decorated = decorate(all, { ledger, pins, sessionId, ageDays: days });
+        const found = cleanupCandidates(decorated, { classifyRow: (row) => row });
+        json(res, 200, {
+          ok: true,
+          ageDays: days,
+          count: found.count,
+          bytes: found.bytes,
+          total: all.length,
+          totalBytes: all.reduce((sum, row) => sum + row.bytes, 0),
+          rows: found.candidates.map((item) => {
+            const row = decorated.find((entry) => entry.sha === item.sha) ?? item;
+            return wireRow({ ...row, ordinal: row.ordinal ?? 0 });
+          })
+        });
+      } catch (error) {
+        json(res, 500, { ok: false, error: 'cleanup-failed', hint: `算候选失败：${error instanceof Error ? error.message : String(error)}` });
+      }
+    }
+  });
+
+  ctx.webServer.register({
+    kind: 'exact',
+    path: `${BASE}/trash`,
+    handler: async (req, res) => {
+      if (!fence(req, res, trustedHosts)) return;
+      const sessionId = queryParam(req.url ?? '', 'session');
+      const cwd = cwdOf(sessions, sessionId);
+      try {
+        if (req.method === 'GET') {
+          const trash = await listTrash({ trashRoot, io: fsp });
+          json(res, 200, { ok: true, ...trash });
+          return;
+        }
+        if (req.method !== 'POST') {
+          json(res, 405, { ok: false, error: 'method-not-allowed', hint: '回收站：GET 看清单，POST 做 move / restore / purge。' });
+          return;
+        }
+        let body;
+        try {
+          body = await readJsonBody(req, 256 * 1024);
+        } catch (error) {
+          json(res, 400, { ok: false, error: 'bad-body', hint: `body 得是 JSON：${error instanceof Error ? error.message : String(error)}` });
+          return;
+        }
+        const op = String(body?.op ?? 'move');
+        const pins = await loadPins();
+        if (op === 'move') {
+          const shas = Array.isArray(body?.shas) ? body.shas : [];
+          const result = await moveToTrash({
+            root,
+            trashRoot,
+            shas,
+            io: fsp,
+            pinnedCheck: (sha) => isPinned(pins, sha),
+            cwds: cwd !== undefined ? [cwd] : []
+          });
+          json(res, 200, { ...result, stats: await statsOf(root, { ledger: await loadLedger(), pins, sessionId }) });
+          return;
+        }
+        if (op === 'restore') {
+          const ids = Array.isArray(body?.ids) ? body.ids : [];
+          const result = await restoreFromTrash({ root, trashRoot, ids, io: fsp });
+          json(res, 200, { ...result, stats: await statsOf(root, { ledger: await loadLedger(), pins, sessionId }) });
+          return;
+        }
+        if (op === 'purge') {
+          const result = await purgeTrash({ trashRoot, io: fsp });
+          json(res, 200, { ...result });
+          return;
+        }
+        json(res, 400, { ok: false, error: 'unknown-op', hint: 'op 只认 move / restore / purge。' });
+      } catch (error) {
+        json(res, 500, { ok: false, error: 'trash-failed', hint: `回收站操作失败：${error instanceof Error ? error.message : String(error)}` });
+      }
     }
   });
 }

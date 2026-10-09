@@ -31,6 +31,19 @@ window.__ModuleLoader__.load({
     const ADMIT_MS = 350;
     /** 附件库指纹轮询间隔（兜底：别的窗口/外部原因让库变了）。 */
     const STAMP_MS = 3000;
+    /** 清理边界默认值：入库满 14 天且从未被引用才进候选（与宿主侧 CLEAN_AGE_DAYS 一致）。 */
+    const CLEAN_DAYS = 14;
+    /** 状态桶：第二排 chip。label 给用户看，value 是宿主的 state 参数。 */
+    const STATE_CHIPS = [
+      ['used', '用过'],
+      ['unused', '没用过'],
+      ['pinned', '已置顶'],
+      ['big', '大文件'],
+      ['noise', '小噪音'],
+      ['cleanable', '可清理']
+    ];
+    /** 四态徽标的中文说法（悬停看理由）。 */
+    const STATE_TEXT = { hot: '常用', warm: '用过', cold: '冷门', fresh: '新入库' };
 
     // ===================== 数据 =====================
 
@@ -56,10 +69,12 @@ window.__ModuleLoader__.load({
       const q = typeof opts.q === 'string' ? opts.q.trim() : '';
       const day = typeof opts.day === 'string' ? opts.day.trim() : '';
       const sort = opts.sort === 'old' || opts.sort === 'big' ? opts.sort : 'new';
+      const bucket = opts.bucket === undefined || opts.bucket === null ? '' : String(opts.bucket).trim();
+      const state = opts.state === undefined || opts.state === null ? '' : String(opts.state).trim();
       const offset = Number.isInteger(opts.offset) && opts.offset > 0 ? opts.offset : 0;
       const limit = Number.isInteger(opts.limit) && opts.limit > 0 ? Math.min(opts.limit, 400) : PAGE;
       const materialize = Number.isInteger(opts.materialize) && opts.materialize >= 0 ? opts.materialize : 0;
-      const key = [typeof sessionId === 'string' ? sessionId : '', q, day, sort, offset, limit, materialize].join('\u0000');
+      const key = [typeof sessionId === 'string' ? sessionId : '', q, day, sort, bucket, state, offset, limit, materialize].join('\u0000');
       const hit = cache.get(key);
       if (!force && hit !== undefined && Date.now() - hit.at < CACHE_MS) return hit;
       const query = new URLSearchParams({ limit: String(limit) });
@@ -67,6 +82,8 @@ window.__ModuleLoader__.load({
       if (q !== '') query.set('q', q);
       if (day !== '') query.set('day', day);
       if (sort !== 'new') query.set('sort', sort);
+      if (bucket !== '' && bucket !== 'all') query.set('bucket', bucket);
+      if (state !== '') query.set('state', state);
       if (offset > 0) query.set('offset', String(offset));
       if (typeof sessionId === 'string' && sessionId !== '') query.set('session', sessionId);
       const response = await fetch(`${BASE}/images?${query.toString()}`, { headers: { accept: 'application/json' } });
@@ -88,6 +105,10 @@ window.__ModuleLoader__.load({
         nextOffset: typeof payload.nextOffset === 'number' ? payload.nextOffset : 0,
         offset,
         totalBytes: typeof payload.totalBytes === 'number' ? payload.totalBytes : 0,
+        bucket: typeof payload.bucket === 'string' ? payload.bucket : '',
+        state: typeof payload.state === 'string' ? payload.state : '',
+        // 全库聚合（真实磁盘体积、可清量、最近使用时间）：面板顶部数字与时间桶 chip 都吃它。
+        stats: payload.stats !== null && typeof payload.stats === 'object' ? payload.stats : undefined,
         note: typeof payload.note === 'string' ? payload.note : undefined
       };
       cache.set(key, snapshot);
@@ -103,6 +124,71 @@ window.__ModuleLoader__.load({
       for (const key of Array.from(cache.keys())) {
         if (key.startsWith(prefix)) cache.delete(key);
       }
+    }
+
+    // ===================== 使用账本 / 置顶 / 清理：宿主侧那五条路由的客户端封装 =====================
+
+    async function postJson(path, body, query) {
+      const suffix = query !== undefined && query !== null && String(query) !== '' ? `?${query}` : '';
+      const response = await fetch(`${BASE}${path}${suffix}`, {
+        method: 'POST',
+        headers: { accept: 'application/json', 'content-type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      const payload = await response.json().catch(() => undefined);
+      if (!response.ok) {
+        const hint = payload !== undefined && typeof payload.hint === 'string' ? payload.hint : `${path} 失败（HTTP ${response.status}）`;
+        throw new Error(hint);
+      }
+      return payload;
+    }
+
+    async function getJson(path, query) {
+      const suffix = query !== undefined && query !== null && String(query) !== '' ? `?${query}` : '';
+      const response = await fetch(`${BASE}${path}${suffix}`, { headers: { accept: 'application/json' } });
+      const payload = await response.json().catch(() => undefined);
+      if (!response.ok) {
+        const hint = payload !== undefined && typeof payload.hint === 'string' ? payload.hint : `${path} 失败（HTTP ${response.status}）`;
+        throw new Error(hint);
+      }
+      return payload;
+    }
+
+    /**
+     * 记一笔「这张图被用过了」：用过就不进清理候选。
+     * 记账失败绝不影响插入本身——它只影响以后的清理判定，静默即可。
+     */
+    function reportUse(sessionId, row, kind) {
+      if (row === undefined || typeof row.sha !== 'string' || row.sha === '') return;
+      const query = new URLSearchParams({ kind: typeof kind === 'string' && kind !== '' ? kind : 'insert' });
+      if (typeof sessionId === 'string' && sessionId !== '') query.set('session', sessionId);
+      postJson('/ledger', { sha: row.sha }, query).catch(() => undefined);
+    }
+
+    async function setPin(sessionId, row) {
+      const query = typeof sessionId === 'string' && sessionId !== '' ? `session=${encodeURIComponent(sessionId)}` : '';
+      return postJson('/pin', { sha: row.sha }, query);
+    }
+
+    async function loadCleanup(sessionId, days) {
+      const query = new URLSearchParams({});
+      if (Number.isInteger(days) && days > 0) query.set('days', String(days));
+      if (typeof sessionId === 'string' && sessionId !== '') query.set('session', sessionId);
+      return getJson('/cleanup', query.toString());
+    }
+
+    async function loadTrash() {
+      return getJson('/trash');
+    }
+
+    async function trashMove(sessionId, shas) {
+      const query = typeof sessionId === 'string' && sessionId !== '' ? `session=${encodeURIComponent(sessionId)}` : '';
+      return postJson('/trash', { op: 'move', shas }, query);
+    }
+
+    async function trashRestore(sessionId, ids) {
+      const query = typeof sessionId === 'string' && sessionId !== '' ? `session=${encodeURIComponent(sessionId)}` : '';
+      return postJson('/trash', { op: 'restore', ids }, query);
     }
 
     /**
@@ -416,6 +502,16 @@ window.__ModuleLoader__.load({
 .pf-chip:hover{opacity:1;background:color-mix(in srgb, CanvasText 10%, transparent)}
 .pf-chip[data-on="1"]{opacity:1;border-color:color-mix(in srgb, CanvasText 42%, transparent);background:color-mix(in srgb, CanvasText 14%, transparent)}
 .pf-more{display:flex;justify-content:center;padding:8px 2px 0}
+.pf-clean{display:flex;flex-direction:column;gap:8px;padding:0 2px 8px}
+.pf-list{display:flex;flex-direction:column;gap:4px;max-height:280px;overflow:auto}
+.pf-row{display:flex;align-items:center;gap:8px;padding:4px 6px;font-size:11px;border-radius:8px;border:1px solid color-mix(in srgb, CanvasText 12%, transparent);background:color-mix(in srgb, CanvasText 4%, transparent);cursor:pointer}
+.pf-row input[type=checkbox]{flex:none;width:14px;height:14px;accent-color:CanvasText;cursor:pointer}
+.pf-row-thumb{flex:none;width:44px;height:34px;object-fit:cover;border-radius:5px;background:#111}
+.pf-row-name{flex:none;min-width:52px;font-weight:600}
+.pf-row-meta{flex:none;opacity:.7}
+.pf-row-why{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;opacity:.6}
+.pf-cleanfoot{display:flex;align-items:center;gap:8px}
+.pf-tag{margin-left:6px;padding:1px 6px;font-size:10px;border-radius:999px;vertical-align:middle;border:1px solid color-mix(in srgb, CanvasText 18%, transparent);opacity:.75}
 .pf-legacy{margin:0 2px 8px;padding:6px 8px;font-size:11px;line-height:1.5;border-radius:8px;border:1px solid color-mix(in srgb, CanvasText 18%, transparent);background:color-mix(in srgb, CanvasText 8%, transparent);opacity:.8}
 .pf-more .pf-btn{flex:none;padding:0 12px}
 .pf-empty{padding:14px 4px;font-size:12px;opacity:.7;line-height:1.6}
@@ -507,6 +603,21 @@ window.__ModuleLoader__.load({
       const [day, setDay] = React.useState('');
       const [sort, setSort] = React.useState('new');
       const [depth, setDepth] = React.useState(1);
+      // 时间桶（近3天/近7天/近30天/更早）与状态桶（用过/没用过/已置顶/大文件/小噪音/可清理）：
+      // 这两排取代了原来那一长串具体日期 chip——日期收进「按日期」下钻，桶是滚动的、恒定 5 个。
+      const [bucket, setBucket] = React.useState('all');
+      const [stateFilter, setStateFilter] = React.useState('');
+      const [showDays, setShowDays] = React.useState(false);
+      // 「浏览」/「清理」两种面板形态：清理态列候选、勾选、移入回收站，并给出回收站撤销入口。
+      const [mode, setMode] = React.useState('browse');
+      const [clean, setClean] = React.useState(undefined);
+      const [picked, setPicked] = React.useState(() => new Set());
+      const [trash, setTrash] = React.useState(undefined);
+      const [working, setWorking] = React.useState(false);
+      // 清理边界：入库满多少天且从未被引用才进候选（宿主侧默认也是 14 天）。
+      const [cleanDays, setCleanDays] = React.useState(CLEAN_DAYS);
+      // 置顶翻转表（会话内即时生效，宿主重取后与它异或）：用 useState 存可变盒子当 ref 使。
+      const [pinnedFlip] = React.useState(() => new Map());
 
       // 搜索框防抖：停手 260ms 再发请求（每次按键都查库太吵）。
       React.useEffect(() => {
@@ -523,7 +634,7 @@ window.__ModuleLoader__.load({
         const force = forceBox.next === true;
         forceBox.next = false;
         setProblem('');
-        loadImages(sessionId, { force, q, day, sort, offset: 0, limit: PAGE * depth }).then((first) => {
+        loadImages(sessionId, { force, q, day, sort, bucket, state: stateFilter, offset: 0, limit: PAGE * depth }).then((first) => {
           // 旧宿主：它不认 q/day/sort/pin，也不给总数。退回旧契约（只列最近一页 + 全量落盘），
           // 起码「插到光标处」还有磁盘路径可用。
           if (first.legacy !== true) return first;
@@ -542,7 +653,32 @@ window.__ModuleLoader__.load({
         return () => {
           alive = false;
         };
-      }, [sessionId, tick, q, day, sort, depth]);
+      }, [sessionId, tick, q, day, sort, bucket, stateFilter, depth]);
+
+      // 清理态：拉一次候选 + 回收站。默认全勾（规则本身就是「满 N 天且从未被引用」）。
+      React.useEffect(() => {
+        if (mode !== 'clean') return undefined;
+        let alive = true;
+        setWorking(true);
+        const days = cleanDays;
+        Promise.all([loadCleanup(sessionId, days), loadTrash()]).then(
+          ([list, bin]) => {
+            if (!alive) return;
+            setClean(list);
+            setTrash(bin);
+            setPicked(new Set((Array.isArray(list.rows) ? list.rows : []).map((row) => row.sha)));
+          },
+          (error) => {
+            if (!alive) return;
+            setToast(error instanceof Error ? error.message : String(error));
+          }
+        ).finally(() => {
+          if (alive) setWorking(false);
+        });
+        return () => {
+          alive = false;
+        };
+      }, [mode, sessionId, cleanDays]);
 
       React.useEffect(() => {
         if (toast === '') return undefined;
@@ -576,6 +712,7 @@ window.__ModuleLoader__.load({
                 ? insertChipAtCaret(props.ctxRef?.current, sessionId, row, label)
                 : 'off';
             if (placed === 'ok') {
+              reportUse(sessionId, row, 'auto');
               setToast(`${label} 已自动插到光标处 —— 想改回手动：面板里「自动插入」`);
               return;
             }
@@ -640,8 +777,34 @@ window.__ModuleLoader__.load({
       const total = snapshot === undefined ? rows.length : snapshot.total;
       const library = snapshot === undefined || snapshot.libraryTotal === 0 ? total : snapshot.libraryTotal;
       const dayList = snapshot === undefined ? [] : snapshot.days;
-      const filtering = q !== '' || day !== '';
+      const stats = snapshot !== undefined && snapshot.stats !== undefined ? snapshot.stats : undefined;
+      const filtering = q !== '' || day !== '' || stateFilter !== '' || (bucket !== '' && bucket !== 'all');
       const label = problem !== '' ? '图片库不可用' : `${library} 张图`;
+      // 顶部数字要的是磁盘真实占用（不是这一页的体积）+ 可清量 + 最近一次使用。
+      const diskBytes = stats !== undefined && Number.isFinite(stats.totalBytes) ? stats.totalBytes : snapshot !== undefined ? snapshot.totalBytes : 0;
+      const cleanableCount = stats !== undefined && stats.cleanable !== undefined ? stats.cleanable.count : 0;
+      const cleanableBytes = stats !== undefined && stats.cleanable !== undefined ? stats.cleanable.bytes : 0;
+      const lastUsedMs = stats !== undefined && Number.isFinite(stats.lastUsedMs) ? stats.lastUsedMs : 0;
+      const stateCounts = stats !== undefined && stats.states !== undefined ? stats.states : {};
+      const hasStats = stats !== undefined && Array.isArray(stats.buckets) && stats.buckets.length > 0;
+      const timeChips = hasStats
+        ? stats.buckets.map((entry) => [entry.id, entry.label, entry.count])
+        // 旧宿主没有聚合能力：第一排退回按天（点了走 day 参数，不是 bucket）。
+        : [['all', `全部 ${library}`, undefined]].concat(dayList.slice(0, 12).map((entry) => [`d:${entry.day}`, entry.day, entry.count]));
+      const stateChips = STATE_CHIPS.map(([value, text]) => [value, text, Number.isFinite(stateCounts[value]) ? stateCounts[value] : 0]);
+      // 清理态的三样数据：候选清单、回收站内容、回收站位置（给用户看清楚东西去哪了）。
+      const cleanRows = clean === undefined || !Array.isArray(clean.rows) ? [] : clean.rows;
+      const trashEntries = trash === undefined || !Array.isArray(trash.entries) ? [] : trash.entries;
+      const trashCount = trash !== undefined && Number.isFinite(trash.count) ? trash.count : trashEntries.length;
+      const trashBytes = trash !== undefined && Number.isFinite(trash.bytes) ? trash.bytes : 0;
+      const trashRootText = trash !== undefined && typeof trash.trashRoot === 'string' ? trash.trashRoot : '';
+      // 置顶的本地叠加：宿主行上的 pinned 要重取才有，点完立刻翻面靠它。
+      const pinFlip = typeof pinnedFlip.get === 'function' ? pinnedFlip : new Map();
+      const isRowPinned = (row) => {
+        const host = row !== undefined && row.pinned === true;
+        const flipped = pinFlip.get(row.sha) === true;
+        return flipped ? !host : host;
+      };
       // 刚入库的那张要立刻看得见：取数还没回来（或者正被筛选条件挡着）就先把它顶到最前面。
       const freshRow = fresh !== undefined && fresh.row !== undefined ? fresh.row : undefined;
       const freshSha = fresh !== undefined && typeof fresh.sha === 'string' ? fresh.sha : '';
@@ -651,7 +814,10 @@ window.__ModuleLoader__.load({
       const onAttach = (row) => {
         setBusy(row.sha);
         attachRow(props.ctxRef?.current, sessionId, inputActions, row).then(
-          (name) => setToast(`已挂上 ${name}，发送时模型会直接看到它`),
+          (name) => {
+            reportUse(sessionId, row, 'attach');
+            setToast(`已挂上 ${name}，发送时模型会直接看到它`);
+          },
           (error) => setToast(error instanceof Error ? error.message : String(error))
         ).finally(() => setBusy(''));
       };
@@ -660,6 +826,7 @@ window.__ModuleLoader__.load({
         const place = () => {
           const status = insertChipAtCaret(props.ctxRef?.current, sessionId, row, label);
           if (status === 'ok') {
+            reportUse(sessionId, row, 'insert');
             setToast(`已插入 ${label} —— 它就是一个引用，接着打字就行`);
             return;
           }
@@ -729,7 +896,20 @@ window.__ModuleLoader__.load({
                 'div',
                 { className: 'pf-head' },
                 h('strong', null, problem !== '' ? '引用素材' : `引用素材 · 库里 ${library} 张`),
-                h('span', null, filtering ? `· 命中 ${total} 张` : snapshot !== undefined && snapshot.totalBytes > 0 ? `· ${sizeText(snapshot.totalBytes)}` : ''),
+                h(
+                  'span',
+                  {
+                    title:
+                      stats === undefined
+                        ? '宿主半边还没有聚合能力（重启 DSH NEXT 后生效）'
+                        : `磁盘真实占用 ${sizeText(diskBytes)}；可清理 ${cleanableCount} 张 / ${sizeText(cleanableBytes)}（入库满 ${cleanDays} 天且从未被引用）${lastUsedMs > 0 ? `；最近一次使用在 ${new Date(lastUsedMs).toLocaleString()}` : ''}`
+                  },
+                  filtering
+                    ? `· 命中 ${total} 张`
+                    : diskBytes > 0
+                      ? `· 占盘 ${sizeText(diskBytes)}${cleanableCount > 0 ? ` · 可清 ${cleanableCount} 张/${sizeText(cleanableBytes)}` : ''}`
+                      : ''
+                ),
                 h('span', { className: 'pf-spacer' }),
                 h(
                   'button',
@@ -749,6 +929,20 @@ window.__ModuleLoader__.load({
                     }
                   },
                   `自动插入 ${autoInsert === true ? '开' : '关'}`
+                ),
+                h(
+                  'button',
+                  {
+                    type: 'button',
+                    className: 'pf-chip',
+                    'data-on': mode === 'clean' ? '1' : '0',
+                    title:
+                      cleanableCount > 0
+                        ? `挑出 ${cleanableCount} 张（入库满 ${cleanDays} 天且从未被引用）搬进回收站，7 天内可撤销`
+                        : '按「入库满天数 + 从未被引用」挑图搬进回收站（7 天内可撤销）',
+                    onClick: () => setMode(mode === 'clean' ? 'browse' : 'clean')
+                  },
+                  mode === 'clean' ? '返回浏览' : `清理${cleanableCount > 0 ? ` ${cleanableCount}` : ''}`
                 ),
                 h(
                   'button',
@@ -778,33 +972,31 @@ window.__ModuleLoader__.load({
                 h(
                   'div',
                   { className: 'pf-chips' },
-                  h(
-                    'button',
-                    {
-                      type: 'button',
-                      className: 'pf-chip',
-                      'data-on': day === '' ? '1' : '0',
-                      onClick: () => {
-                        setDay('');
-                        setDepth(1);
-                      }
-                    },
-                    `全部 ${library}`
-                  ),
-                  dayList.slice(0, 12).map((entry) =>
+                  // 第一排：时间桶。宿主给的 stats.buckets 是滚动的恒定 5 个（全部/近3天/近7天/近30天/更早），
+                  // 取代原来那一长串「10-08 19 / 10-07 22 …」日期 chip；具体日期收进下面的「按日期」下钻。
+                  timeChips.map(([id, text, count]) =>
                     h(
                       'button',
                       {
                         type: 'button',
                         className: 'pf-chip',
-                        key: entry.day,
-                        'data-on': day === entry.day ? '1' : '0',
+                        key: id,
+                        'data-on': id.startsWith('d:') ? (day === id.slice(2) ? '1' : '0') : bucket === id && day === '' ? '1' : '0',
+                        title: count === undefined ? text : `${text}：${count} 张`,
                         onClick: () => {
-                          setDay(day === entry.day ? '' : entry.day);
+                          // 「d:」前缀 = 旧宿主回退形态里的按天 chip：点它是筛某一天，不是时间桶。
+                          if (id.startsWith('d:')) {
+                            const target = id.slice(2);
+                            setBucket('all');
+                            setDay(day === target ? '' : target);
+                          } else {
+                            setBucket(id);
+                            setDay('');
+                          }
                           setDepth(1);
                         }
                       },
-                      `${entry.day} ${entry.count}`
+                      count === undefined ? text : `${text} ${count}`
                     )
                   ),
                   h('span', { className: 'pf-spacer' }),
@@ -828,11 +1020,212 @@ window.__ModuleLoader__.load({
                       text
                     )
                   )
-                )
+                ),
+                h(
+                  'div',
+                  { className: 'pf-chips' },
+                  // 第二排：状态桶。「没用过 + 更早」就是清理候选的来源。
+                  stateChips.map(([value, text, count]) =>
+                    h(
+                      'button',
+                      {
+                        type: 'button',
+                        className: 'pf-chip',
+                        key: value,
+                        'data-on': stateFilter === value ? '1' : '0',
+                        title: `${text}：${count} 张（点一下筛，再点取消）`,
+                        onClick: () => {
+                          setStateFilter(stateFilter === value ? '' : value);
+                          setDepth(1);
+                        }
+                      },
+                      `${text} ${count}`
+                    )
+                  ),
+                  h('span', { className: 'pf-spacer' }),
+                  h(
+                    'button',
+                    {
+                      type: 'button',
+                      className: 'pf-chip',
+                      'data-on': showDays ? '1' : '0',
+                      title: '展开按天筛选（哪天贴得多一目了然）',
+                      onClick: () => setShowDays(!showDays)
+                    },
+                    '按日期'
+                  )
+                ),
+                showDays
+                  ? h(
+                      'div',
+                      { className: 'pf-chips' },
+                      dayList.slice(0, 20).map((entry) =>
+                        h(
+                          'button',
+                          {
+                            type: 'button',
+                            className: 'pf-chip',
+                            key: entry.day,
+                            'data-on': day === entry.day ? '1' : '0',
+                            onClick: () => {
+                              setDay(day === entry.day ? '' : entry.day);
+                              setDepth(1);
+                            }
+                          },
+                          `${entry.day} ${entry.count}`
+                        )
+                      )
+                    )
+                  : null
               ),
-              problem !== ''
-                ? h('div', { className: 'pf-empty' }, problem)
-                : shown.length === 0
+              // ---------- 清理态：候选清单 + 勾选 + 移入回收站 + 撤销 ----------
+              mode === 'clean'
+                ? h(
+                    'div',
+                    { className: 'pf-clean' },
+                    h(
+                      'div',
+                      { className: 'pf-chips' },
+                      [7, 14, 30].map((days) =>
+                        h(
+                          'button',
+                          {
+                            type: 'button',
+                            className: 'pf-chip',
+                            key: days,
+                            'data-on': cleanDays === days ? '1' : '0',
+                            title: `入库满 ${days} 天且从未被引用的进候选`,
+                            onClick: () => setCleanDays(days)
+                          },
+                          `满 ${days} 天`
+                        )
+                      ),
+                      h('span', { className: 'pf-spacer' }),
+                      h(
+                        'button',
+                        {
+                          type: 'button',
+                          className: 'pf-chip',
+                          onClick: () => setPicked(new Set((Array.isArray(clean?.rows) ? clean.rows : []).map((row) => row.sha)))
+                        },
+                        '全选'
+                      ),
+                      h(
+                        'button',
+                        {
+                          type: 'button',
+                          className: 'pf-chip',
+                          onClick: () => {
+                            const all = (Array.isArray(clean?.rows) ? clean.rows : []).map((row) => row.sha);
+                            const next = new Set();
+                            for (const sha of all) if (!picked.has(sha)) next.add(sha);
+                            setPicked(next);
+                          }
+                        },
+                        '反选'
+                      )
+                    ),
+                    working && clean === undefined
+                      ? h('div', { className: 'pf-empty' }, '正在按规则挑图……')
+                      : cleanRows.length === 0
+                        ? h(
+                            'div',
+                            { className: 'pf-empty' },
+                            `按「入库满 ${cleanDays} 天 + 从未被引用 + 未置顶 + 不属于当前会话」挑，一张都不该动 —— 说明库里没有可清的图。`
+                          )
+                        : h(
+                            'div',
+                            { className: 'pf-list' },
+                            cleanRows.map((row) =>
+                              h(
+                                'label',
+                                { className: 'pf-row', key: row.sha, title: (Array.isArray(row.reasons) ? row.reasons : []).join('；') },
+                                h('input', {
+                                  type: 'checkbox',
+                                  checked: picked.has(row.sha),
+                                  onChange: () => {
+                                    const next = new Set(picked);
+                                    if (next.has(row.sha)) next.delete(row.sha);
+                                    else next.add(row.sha);
+                                    setPicked(next);
+                                  }
+                                }),
+                                h('img', { className: 'pf-row-thumb', src: row.url, alt: row.label, loading: 'lazy' }),
+                                h('span', { className: 'pf-row-name' }, rowLabel(row, 0)),
+                                h('span', { className: 'pf-row-meta' }, `${row.day} · ${sizeText(row.bytes)}`),
+                                h('span', { className: 'pf-row-why' }, (Array.isArray(row.reasons) ? row.reasons : [])[0] ?? '')
+                              )
+                            )
+                          ),
+                    h(
+                      'div',
+                      { className: 'pf-cleanfoot' },
+                      h(
+                        'button',
+                        {
+                          type: 'button',
+                          className: 'pf-btn',
+                          'data-primary': '1',
+                          disabled: picked.size === 0 || working,
+                          title: '搬进回收站：附件库里不再有它们，工作区里的缩略副本一起清掉；7 天内可撤销，超期真删',
+                          onClick: () => {
+                            const shas = Array.from(picked);
+                            setWorking(true);
+                            trashMove(sessionId, shas).then(
+                              (payload) => {
+                                const moved = Array.isArray(payload.moved) ? payload.moved.length : 0;
+                                const bytes = Number.isFinite(payload.bytes) ? payload.bytes : 0;
+                                const skipped = Array.isArray(payload.skipped) ? payload.skipped.length : 0;
+                                setToast(`已移入回收站 ${moved} 张${bytes > 0 ? `（${sizeText(bytes)}）` : ''}${skipped > 0 ? `，${skipped} 张没动` : ''} —— 7 天内可撤销`);
+                                setPicked(new Set());
+                                forgetImages(sessionId);
+                                reload();
+                                void loadCleanup(sessionId, cleanDays).then(setClean, () => undefined);
+                                void loadTrash().then(setTrash, () => undefined);
+                              },
+                              (error) => setToast(error instanceof Error ? error.message : String(error))
+                            ).finally(() => setWorking(false));
+                          }
+                        },
+                        working ? '…' : `移入回收站${picked.size > 0 ? ` ${picked.size} 张` : ''}`
+                      ),
+                      h('span', { className: 'pf-spacer' }),
+                      trashCount > 0
+                        ? h(
+                            'button',
+                            {
+                              type: 'button',
+                              className: 'pf-btn',
+                              disabled: working,
+                              title: '把回收站里的图全部放回附件库',
+                              onClick: () => {
+                                setWorking(true);
+                                trashRestore(sessionId, []).then(
+                                  (payload) => {
+                                    const back = Array.isArray(payload.restored) ? payload.restored.length : 0;
+                                    setToast(`已撤销 ${back} 张，回到图片库`);
+                                    forgetImages(sessionId);
+                                    reload();
+                                    void loadTrash().then(setTrash, () => undefined);
+                                    void loadCleanup(sessionId, cleanDays).then(setClean, () => undefined);
+                                  },
+                                  (error) => setToast(error instanceof Error ? error.message : String(error))
+                                ).finally(() => setWorking(false));
+                              }
+                            },
+                            `全部撤销（${trashCount} 张 / ${sizeText(trashBytes)}）`
+                          )
+                        : null
+                    ),
+                    h('div', { className: 'pf-note' },
+                      trashCount > 0
+                        ? `回收站里 ${trashCount} 张 / ${sizeText(trashBytes)}（${trashRootText !== '' ? trashRootText : '插件回收站'}）：满 7 天后才真删，之后无法找回。置顶的图永远不会进候选，当前会话刚贴的也不会。`
+                        : `规则：入库满 ${cleanDays} 天 + 从未被引用 + 未置顶 + 不属于当前会话。搬动只发生在插件自己的回收站目录${trashRootText !== '' ? `（${trashRootText}）` : ''}，不动官方附件库的其它内容。`
+                    )
+                  )
+                : problem !== ''
+                  ? h('div', { className: 'pf-empty' }, problem)
+                  : shown.length === 0
                   ? h(
                       'div',
                       { className: 'pf-empty' },
@@ -850,7 +1243,17 @@ window.__ModuleLoader__.load({
                           'div',
                           { className: 'pf-cell', key: row.sha, 'data-fresh': isFresh ? '1' : '0' },
                           h('img', { className: 'pf-thumb', src: row.url, alt: label, loading: 'lazy', title: `点击放大 ${label}`, onClick: () => showZoom({ row, label }) }),
-                          h('div', { className: 'pf-name' }, label, isFresh ? h('span', { className: 'pf-badge' }, '刚入库') : null),
+                          h(
+                            'div',
+                            { className: 'pf-name' },
+                            label,
+                            isFresh ? h('span', { className: 'pf-badge' }, '刚入库') : null,
+                            typeof row.state === 'string' && STATE_TEXT[row.state] !== undefined
+                              ? h('span', { className: 'pf-tag', title: (Array.isArray(row.reasons) ? row.reasons : []).join('；') }, STATE_TEXT[row.state])
+                              : null,
+                            row.noise === true ? h('span', { className: 'pf-tag', title: '小于 20 KB：多半是截了个角、一句话的截图这类噪音' }, '小') : null,
+                            isRowPinned(row) ? h('span', { className: 'pf-tag', title: '已置顶：清理永远不碰它' }, '顶') : null
+                          ),
                           h('div', { className: 'pf-meta', title: `${row.filename} · ${sizeText(row.bytes)}` }, `${row.label} · ${sizeText(row.bytes)}`),
                           h(
                             'div',
@@ -882,6 +1285,33 @@ window.__ModuleLoader__.load({
                               'button',
                               { type: 'button', className: 'pf-btn', title: '复制 markdown 图片语法', onClick: () => onPath(row) },
                               '路径'
+                            ),
+                            h(
+                              'button',
+                              {
+                                type: 'button',
+                                className: 'pf-btn',
+                                disabled: busy !== '',
+                                title:
+                                  isRowPinned(row)
+                                    ? '已置顶：这张图永远不会进清理候选（点一下取消）'
+                                    : '置顶：这张图永远不会进清理候选，也不会被自动清走',
+                                onClick: () => {
+                                  setBusy(row.sha);
+                                  setPin(sessionId, row).then(
+                                    (payload) => {
+                                      const now = payload !== null && typeof payload === 'object' && payload.pinned === true;
+                                      // 宿主说它现在是置顶的：与「原本置不置顶」不一致就记一次翻转，界面立刻翻面。
+                                      pinFlip.set(row.sha, now !== (row.pinned === true));
+                                      setToast(now ? `已置顶 ${label}：清理永远不碰它` : `已取消置顶 ${label}`);
+                                      forgetImages(sessionId);
+                                      reload();
+                                    },
+                                    (error) => setToast(error instanceof Error ? error.message : String(error))
+                                  ).finally(() => setBusy(''));
+                                }
+                              },
+                              busy === row.sha ? '…' : isRowPinned(row) ? '取消置顶' : '置顶'
                             )
                           )
                         );
@@ -939,6 +1369,8 @@ window.__ModuleLoader__.load({
             showGroupTitle: true,
             candidates: async (projection, options) => {
               const sessionId = projection !== undefined && typeof projection.sessionId === 'string' ? projection.sessionId : undefined;
+              // @ 菜单的 onPick 拿不到会话，记账要用的会话先在这儿留一份。
+              if (typeof sessionId === 'string' && sessionId !== '') atSessionId = sessionId;
               const raw = options !== undefined && typeof options.query === 'string' ? options.query.trim() : '';
               const parsed = classifyQuery(raw);
               // 搜索词点名到某一张（图片12 / 10-04 / 昨天）→ 全库找那一张；
@@ -982,6 +1414,8 @@ window.__ModuleLoader__.load({
             onPick: (pick) => {
               const candidate = pick !== undefined ? pick.candidate : undefined;
               if (candidate === undefined) return undefined;
+              // @ 里选走也算「用过」：账本记一笔，清理候选就不会碰它。
+              reportUse(atSessionId, { sha: candidate.sha }, 'at');
               if (typeof candidate.address === 'string' && candidate.address !== '') {
                 return {
                   insert: {

@@ -131,7 +131,7 @@ function createStorage(seed) {
 
 //#region one loaded plugin instance over a fake app
 function load(payload, options = {}) {
-	const log = { fetches: [], insertReference: [], insertText: [], attachments: [], drafts: [], writes: [], admits: [] };
+	const log = { fetches: [], posts: [], insertReference: [], insertText: [], attachments: [], drafts: [], writes: [], admits: [] };
 	// 开关默认「开」；options.autoInsert === false 时预置成用户曾经关掉过。
 	const storage = options.storage ?? createStorage(options.autoInsert === false ? "0" : undefined);
 	const react = createReact();
@@ -217,9 +217,31 @@ function load(payload, options = {}) {
 	const fetchStub = async (url, init) => {
 		const href = String(url);
 		log.fetches.push(href);
+		if (init?.method === "POST") log.posts.push({ href, body: init.body });
 		if (href.includes("/version")) {
 			const stamp = typeof options.stamp === "function" ? options.stamp() : options.stamp ?? "";
 			return { ok: true, status: 200, json: async () => ({ stamp, root: "C:\\fake\\attachments\\v1" }) };
+		}
+		// 新五条路由的替身：账本 / 置顶 / 清理候选 / 回收站。
+		if (href.includes("/ledger?")) {
+			return { ok: true, status: 200, json: async () => ({ ok: true, saved: true, entry: { uses: 1 } }) };
+		}
+		if (href.includes("/pin?")) {
+			return { ok: true, status: 200, json: async () => options.pinResult ?? { ok: true, saved: true, pinned: true, count: 1 } };
+		}
+		if (href.includes("/cleanup")) {
+			return { ok: true, status: 200, json: async () => options.cleanup ?? { ok: true, ageDays: 14, count: 0, bytes: 0, rows: [] } };
+		}
+		if (href.includes("/trash")) {
+			if (init?.method === "POST") {
+				return {
+					ok: true,
+					status: 200,
+					json: async () =>
+						options.trashMove ?? { ok: true, moved: [{ sha: "a".repeat(64), bytes: 1024 }], skipped: [], bytes: 1024, restored: [], stats: {} }
+				};
+			}
+			return { ok: true, status: 200, json: async () => options.trash ?? { ok: true, entries: [], count: 0, bytes: 0, trashRoot: "C:\\fake\\.dsh\\trash\\dsh-picflow" } };
 		}
 		if (href.includes("/admit?")) {
 			log.admits.push({ href, method: init?.method, type: init?.headers?.["content-type"], body: init?.body });
@@ -535,10 +557,11 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 	const before = world.log.fetches.length;
 	buttons(world.tree(), "插到光标处")[0].props.onClick();
 	await settle();
+	const extra = world.log.fetches.slice(before);
 	check(
 		"old host: inserting still works straight from the materialised path",
-		world.log.insertReference.length === 1 && world.log.insertReference[0]?.ref?.ref === A1 && world.log.fetches.length === before && !world.log.fetches.some((href) => href.includes("pin=")),
-		JSON.stringify({ refs: world.log.insertReference.length, fetches: world.log.fetches.slice(before) })
+		world.log.insertReference.length === 1 && world.log.insertReference[0]?.ref?.ref === A1 && extra.length === 1 && extra[0].includes("/ledger?kind=insert") && !extra.some((href) => href.includes("pin=")),
+		JSON.stringify({ refs: world.log.insertReference.length, fetches: extra })
 	);
 
 	const candidates = await world.source.options.candidates({ sessionId: "session-1" }, { query: "图片12" });
@@ -721,6 +744,140 @@ const pastedFile = (name) =>
 		world.log.fetches.filter((href) => href.includes("/images?")).length === before + 1,
 		JSON.stringify(world.log.fetches)
 	);
+}
+
+//#region 9. 时间桶 / 状态桶 / 记账 / 清理向导
+const statsFixture = {
+	total: 490,
+	totalBytes: 173200000,
+	lastUsedMs: Date.parse("2026-10-08T09:00:00Z"),
+	buckets: [
+		{ id: "all", label: "全部", days: null, count: 490 },
+		{ id: "3d", label: "近3天", days: 3, count: 86 },
+		{ id: "7d", label: "近7天", days: 7, count: 319 },
+		{ id: "30d", label: "近30天", days: 30, count: 470 },
+		{ id: "older", label: "更早", days: -30, count: 20 }
+	],
+	states: { hot: 40, warm: 120, cold: 300, fresh: 30, noise: 60, big: 103, pinned: 4, used: 160, unused: 330, cleanable: 241 },
+	cleanable: { count: 241, bytes: 118000000 }
+};
+const statsPayload = { ...payload, bucket: "all", state: "", stats: statsFixture };
+const cleanFixture = {
+	ok: true,
+	ageDays: 14,
+	count: 2,
+	bytes: 40389,
+	rows: [
+		{ sha: "c".repeat(64), url: "/plugins/dsh-picflow/raw?ref=ccc", label: "09-20 08:12", filename: "pic-c.jpg", bytes: 400000, ext: "jpg", day: "09-20", ordinal: 3, state: "cold", reasons: ["入库 18 天，从未被引用"], cleanable: true },
+		{ sha: "a".repeat(64), url: "/plugins/dsh-picflow/raw?ref=aaa", label: "09-19 09:01", filename: "pic-a.png", bytes: 10389, ext: "png", day: "09-19", ordinal: 1, state: "cold", reasons: ["入库 19 天，从未被引用"], cleanable: true }
+	]
+};
+const trashFixture = {
+	ok: true,
+	entries: [{ id: "1008-0900-aaaaaa11-1", sha: "b".repeat(64), bytes: 2048, source: "objects", movedMs: Date.parse("2026-10-08T09:00:00Z"), daysInTrash: 0, purgeAfterMs: Date.parse("2026-10-15T09:00:00Z") }],
+	count: 1,
+	bytes: 2048,
+	trashRoot: "C:\\Users\\Administrator\\.dsh\\trash\\dsh-picflow"
+};
+{
+	const world = load(statsPayload);
+	await settle();
+	buttons(world.tree(), "490 张图")[0].props.onClick();
+	await settle();
+	const text = () => textOf(world.tree());
+	check(
+		"时间桶恒定 5 个（全部/近3天/近7天/近30天/更早），不再是逐日 chip",
+		["全部 490", "近3天 86", "近7天 319", "近30天 470", "更早 20"].every((label) => buttons(world.tree(), label).length === 1),
+		text().slice(0, 240)
+	);
+	check(
+		"状态桶一排（用过/没用过/已置顶/大文件/小噪音/可清理）带计数",
+		["用过 160", "没用过 330", "已置顶 4", "大文件 103", "小噪音 60", "可清理 241"].every((label) => buttons(world.tree(), label).length === 1),
+		text().slice(0, 300)
+	);
+	check(
+		"顶部数字给磁盘真实体积与可清量（不是这一页的体积）",
+		text().includes("165.2 MB") && text().includes("可清 241 张"),
+		text().slice(0, 200)
+	);
+	check("具体日期收进「按日期」下钻，默认不铺一长排", buttons(world.tree(), "按日期").length === 1 && !text().includes("10-04 61"), text().slice(0, 240));
+
+	buttons(world.tree(), "近7天 319")[0].props.onClick();
+	await settle();
+	check("点「近7天」按时间桶问宿主", world.log.fetches.at(-1).includes("bucket=7d"), world.log.fetches.at(-1));
+
+	buttons(world.tree(), "没用过 330")[0].props.onClick();
+	await settle();
+	check("点「没用过」按状态桶问宿主", world.log.fetches.at(-1).includes("state=unused"), world.log.fetches.at(-1));
+
+	buttons(world.tree(), "按日期")[0].props.onClick();
+	await settle();
+	check("展开「按日期」后出现逐日 chip，点击走 day 参数", text().includes("10-04 61") && (buttons(world.tree(), "10-04 61")[0].props.onClick(), true));
+	await settle();
+	check("按日期下钻的点击仍是 day 筛选", world.log.fetches.at(-1).includes("day=10-04"), world.log.fetches.at(-1));
+}
+{
+	const world = load(statsPayload);
+	await settle();
+	buttons(world.tree(), "490 张图")[0].props.onClick();
+	await settle();
+	const before = world.log.posts.length;
+	buttons(world.tree(), "插到光标处")[0].props.onClick();
+	await settle();
+	check(
+		"插到光标处记一笔账（kind=insert），用过就不进清理候选",
+		world.log.posts.length === before + 1 && world.log.posts.at(-1).href.includes("/ledger?") && world.log.posts.at(-1).href.includes("kind=insert") && JSON.parse(world.log.posts.at(-1).body).sha === "a".repeat(64),
+		JSON.stringify(world.log.posts.slice(before))
+	);
+	buttons(world.tree(), "置顶")[0].props.onClick();
+	await settle();
+	check(
+		"「置顶」POST /pin，成功后按钮变「取消置顶」并提示",
+		world.log.posts.some((post) => post.href.includes("/pin?")) && textOf(world.tree()).includes("取消置顶") && textOf(world.tree()).includes("已置顶"),
+		JSON.stringify({ posts: world.log.posts.map((post) => post.href.split("?")[0]), text: textOf(world.tree()).slice(0, 200) })
+	);
+}
+{
+	const world = load(statsPayload, { cleanup: cleanFixture, trash: trashFixture });
+	await settle();
+	buttons(world.tree(), "490 张图")[0].props.onClick();
+	await settle();
+	const text = () => textOf(world.tree());
+	check("清理入口带可清数量", buttons(world.tree(), "清理 241").length === 1, text().slice(0, 200));
+	buttons(world.tree(), "清理 241")[0].props.onClick();
+	await settle();
+	check(
+		"进清理态就按默认边界（满 14 天）拉候选 + 回收站",
+		world.log.fetches.some((href) => href.includes("/cleanup?") && href.includes("days=14")) && world.log.fetches.some((href) => href.includes("/trash")),
+		JSON.stringify(world.log.fetches.slice(-3))
+	);
+	check(
+		"候选行渲染出来并默认全勾，理由写在标题里",
+		findAll(world.tree(), (node) => node.props?.className === "pf-row").length === 2 &&
+			findAll(world.tree(), (node) => node.type === "input" && node.props?.type === "checkbox").every((node) => node.props.checked === true),
+		JSON.stringify(findAll(world.tree(), (node) => node.props?.className === "pf-row").length)
+	);
+	const beforeMove = world.log.posts.length;
+	buttons(world.tree(), "移入回收站 2 张")[0].props.onClick();
+	await settle();
+	check(
+		"「移入回收站」POST /trash op=move 带上勾选的 sha",
+		world.log.posts.length === beforeMove + 1 && JSON.parse(world.log.posts.at(-1).body).op === "move" && JSON.parse(world.log.posts.at(-1).body).shas.length === 2,
+		JSON.stringify(world.log.posts.slice(beforeMove))
+	);
+	check("移完提示可撤销，回收站入口给出张数/体积", text().includes("7 天内可撤销") && buttons(world.tree(), "全部撤销（1 张 / 2 KB）").length === 1, text().slice(-320));
+	const beforeRestore = world.log.posts.length;
+	buttons(world.tree(), "全部撤销（1 张 / 2 KB）")[0].props.onClick();
+	await settle();
+	check(
+		"「全部撤销」POST /trash op=restore（ids 空 = 全撤）",
+		world.log.posts.length === beforeRestore + 1 && JSON.parse(world.log.posts.at(-1).body).op === "restore" && JSON.parse(world.log.posts.at(-1).body).ids.length === 0,
+		JSON.stringify(world.log.posts.slice(beforeRestore))
+	);
+	buttons(world.tree(), "满 7 天")[0].props.onClick();
+	await settle();
+	check("改边界（满 7 天）会重拉候选", world.log.fetches.some((href) => href.includes("/cleanup?") && href.includes("days=7")), JSON.stringify(world.log.fetches.slice(-2)));
+	check("清理态里能看见东西搬去哪了", text().includes("trash\\dsh-picflow"), text().slice(-260));
 }
 
 console.log(failures === 0 ? "\nall checks passed" : `\n${failures} check(s) failed`);
