@@ -36,7 +36,8 @@
     "CHANGELOG.md",
     "LICENSE",
     "install.sh",
-    "install.ps1"
+    "install.ps1",
+    "assets"
   ],
   "license": "MIT",
   "repository": {
